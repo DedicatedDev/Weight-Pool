@@ -3,6 +3,7 @@ package market
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 
@@ -165,12 +166,47 @@ func (imm *InterchainMarketMaker) MarketPrice(denomIn, denomOut string) (*types.
 	return &marketPrice, nil
 }
 
-// P_issued = P_supply * ((1 + At/Bt) ** Wt -1)
+// Worth Function V=M)
+func (imm *InterchainMarketMaker) Worth() (*types.Dec, error) {
+	v := 1.0
+	for _, pool := range imm.Pool.Assets {
+		w := float64(pool.Weight) / 100.0
+		balance := float64(pool.Balance.Amount.Int64())
+		v *= math.Pow(balance, w)
+	}
+	decV := types.NewDec(int64(v))
+	return &decV, nil
+}
+
+// Worth Function V=M)
+func (imm *InterchainMarketMaker) TVL() float64 {
+	v := 1.0
+	totalBalance := big.NewInt(0)
+	for _, pool := range imm.Pool.Assets {
+		totalBalance.Add(totalBalance, pool.Balance.Amount.BigInt())
+	}
+	for _, pool := range imm.Pool.Assets {
+		w := float64(pool.Weight) / 100.0
+		balance := float64(pool.Balance.Amount.Int64()) / float64(totalBalance.Int64())
+		v *= math.Pow(balance, w)
+	}
+
+	return v
+}
+
 func (imm *InterchainMarketMaker) DepositSingleAsset(token types.Coin) (*types.Coin, error) {
 	asset, err := imm.Pool.FindAssetByDenom(token.Denom)
 	if err != nil {
 		return nil, err
 	}
+
+	// // Get the maximum single deposit amount based on the current weight imbalance
+	// weightImbalance := imm.getWeightImbalance()
+	// maxDepositAmount := types.NewDecFromInt(asset.Balance.Amount).Mul(weightImbalance).RoundInt()
+
+	// if token.Amount.GT(maxDepositAmount) {
+	// 	return nil, fmt.Errorf("single deposit amount is greater than the allowed limit based on the current weight imbalance")
+	// }
 
 	amountDec := types.NewDecFromBigInt(token.Amount.BigInt())
 	supplyDec := types.NewDecFromBigInt(imm.Pool.Supply.Amount.BigInt())
@@ -185,23 +221,32 @@ func (imm *InterchainMarketMaker) DepositSingleAsset(token types.Coin) (*types.C
 		}
 		issueAmount = totalInitialLpAmount.Mul(types.NewInt(int64(asset.Weight))).Quo(types.NewInt(100))
 	} else {
-		//const issueAmount = supply * (math.pow(1+amount/asset.balance, weight) - 1)
-
+		// weight := float64(asset.Weight) / 100
+		// ratio := 1 + float64(token.Amount.Uint64())/float64(asset.Balance.Amount.Uint64())
+		// factor := math.Pow(ratio, float64(weight)) - 1
+		// issueLp := float64(imm.Pool.Supply.Amount.Uint64()) * factor
+		// issueAmount = types.NewInt(int64(issueLp))
 		balanceDec := types.NewDecFromBigInt(asset.Balance.Amount.BigInt())
 		ratio := amountDec.Quo(balanceDec)
 
-		// Calculate 1 + ratio / power
-		factorBase := types.NewDec(1).Add(ratio)
-		factorBaseFloat64, _ := factorBase.Float64()
-		powerFloat64, _ := weightDec.Float64()
+		// Calculate log(1 + ratio)
+		logFactorBase, _ := types.NewDec(1).Add(ratio).Float64()
+		logValue := math.Log(logFactorBase)
 
-		// Convert Dec to float64, perform math.Pow, and convert back to Dec
-		factorFloat64 := math.Pow(factorBaseFloat64, powerFloat64)
-		factorDec := types.NewDecFromInt(types.NewInt(int64(factorFloat64 * 1e18))).Quo(types.NewDecFromInt(types.NewInt(1e18)))
+		// Calculate logValue * weight
+		weightFloat64, _ := weightDec.Float64()
+		logTimesWeight := logValue * weightFloat64
 
-		issueAmountDec := supplyDec.Mul(factorDec.Sub(types.NewDec(1)))
+		// Calculate e^(logTimesWeight) - 1
+		factor := math.Exp(logTimesWeight) - 1
+
+		// Convert float64 back to Dec
+		factorDec := types.NewDecFromInt(types.NewInt(int64(factor * 1e18))).Quo(types.NewDecFromInt(types.NewInt(1e18)))
+
+		issueAmountDec := supplyDec.Mul(factorDec)
 		issueAmount = types.NewIntFromBigInt(issueAmountDec.TruncateInt().BigInt())
 	}
+
 	outputToken := &types.Coin{
 		Amount: issueAmount,
 		Denom:  imm.Pool.Supply.Denom,
@@ -211,11 +256,12 @@ func (imm *InterchainMarketMaker) DepositSingleAsset(token types.Coin) (*types.C
 	imm.Pool.AddAsset(token)
 	imm.Pool.AddPoolSupply(*outputToken)
 
+	// adjust pool weight
+	//imm.updateWeights()
+
 	return outputToken, nil
 }
 
-// input the supply token, output the expected token.
-// At = Bt * (1 - (1 - P_redeemed / P_supply) ** 1/Wt)
 func (imm *InterchainMarketMaker) Withdraw(redeem types.Coin, denomOut string) (*types.Coin, error) {
 	asset, err := imm.Pool.FindAssetByDenom(denomOut)
 	if err != nil {
@@ -237,16 +283,35 @@ func (imm *InterchainMarketMaker) Withdraw(redeem types.Coin, denomOut string) (
 		return nil, fmt.Errorf("invalid denom pair")
 	}
 
+	// At = Bt * (1 - (1 - P_redeemed / P_supply) ** 1/Wt)
+
+	//asset.Balance.Amount
+	// ratio := 1 - float64(redeem.Amount.Uint64())/float64(imm.Pool.Supply.Amount.Uint64())
+	// exponent := 1 / float64(asset.Weight)
+	// factor := 1 - math.Pow(ratio, exponent)
+
 	balance := types.NewDecFromInt(asset.Balance.Amount)
 	supply := types.NewDecFromInt(imm.Pool.Supply.Amount)
 	weight := types.NewDec(int64(asset.Weight)).Quo(types.NewDec(100))
 
-	// At = Bt * (1 - (1 - P_redeemed / P_supply) ** 1/Wt)
+	// // At = Bt * (1 - (1 - P_redeemed / P_supply) ** 1/Wt)
 	redeemDec := types.NewDecFromInt(redeem.Amount)
 	oneMinusRatio := types.NewDec(1).Sub(redeemDec.Quo(supply))
-	power := oneMinusRatio.Power(types.NewDecFromInt(types.NewInt(1)).Quo(weight).TruncateInt().Uint64())
-	oneMinusPower := types.NewDec(1).Sub(power)
-	amountOut := balance.Mul(oneMinusPower)
+
+	// Calculate log(1 - ratio)
+	logOneMinusRatio, _ := oneMinusRatio.Float64()
+	logValue := math.Log(logOneMinusRatio)
+
+	// Calculate logValue / weight
+	weightFloat64, _ := weight.Float64()
+	logDividedByWeight := logValue / weightFloat64
+
+	// Calculate 1 - e^(logDividedByWeight)
+	factor := 1 - math.Exp(logDividedByWeight)
+
+	// Convert float64 back to Dec
+	factorDec := types.NewDecFromInt(types.NewInt(int64(factor * 1e18))).Quo(types.NewDecFromInt(types.NewInt(1e18)))
+	amountOut := balance.Mul(factorDec)
 	return &types.Coin{
 		Amount: amountOut.RoundInt(),
 		Denom:  denomOut,
@@ -337,6 +402,7 @@ func (amm *InterchainMarketMaker) LogPrice(
 	title string,
 	denomA string,
 	denomB string,
+	userALp, userBLp types.Int,
 ) {
 	fmt.Println("---------------", title, "----------------")
 
@@ -353,5 +419,49 @@ func (amm *InterchainMarketMaker) LogPrice(
 	for _, asset := range amm.Pool.Assets {
 		fmt.Println(asset.Balance.Denom, ":", asset.Balance.Amount)
 	}
-	fmt.Println("--------------------------------------------\n")
+	worth := amm.TVL()
+	lpPrice := worth * 1e10 / float64(amm.Pool.Supply.Amount.Int64())
+
+	outA, _ := amm.Withdraw(types.NewCoin(amm.Pool.PoolId, userALp), denomA)
+	outB, _ := amm.Withdraw(types.NewCoin(amm.Pool.PoolId, userBLp), denomB)
+
+	fmt.Println("----*********----")
+	fmt.Println("UserALPAmount:", userALp)
+	fmt.Println("UserBLPAmount:", userBLp)
+	fmt.Println("WithdrawUSDT:", outA)
+	fmt.Println("WithdrawETH:", outB)
+	fmt.Println("Worth:", worth)
+	fmt.Println("LPprice:", lpPrice)
+	// fmt.Println("--------------------------------------------\n")
 }
+
+// func (imm *InterchainMarketMaker) GetAllowedSingleDepositAmount(denom string) (*types.Coin, error) {
+// 	asset, err := imm.Pool.FindAssetByDenom(denom)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Calculate the invariant
+// 	invariant, err := imm.Worth()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	// Calculate the weight ratio
+// 	weightRatio := types.NewDec(int64(asset.Weight)).Quo(types.NewDec(100))
+
+// 	// Calculate the balance with the current invariant
+// 	currentBalance := types.NewDecFromInt(asset.Balance.Amount)
+// 	newBalance := invariant.Quo(invariant.Quo(currentBalance).Power(types.NewDec(1).Sub(weightRatio).TruncateInt().Uint64()))
+
+// 	// Calculate the maximum allowed deposit amount
+// 	maxDepositAmount := newBalance.Sub(currentBalance).RoundInt()
+// 	if maxDepositAmount.LTE(types.NewInt(0)) {
+// 		maxDepositAmount = types.NewInt(0)
+// 	}
+
+// 	return &types.Coin{
+// 		Amount: maxDepositAmount,
+// 		Denom:  denom,
+// 	}, nil
+// }
