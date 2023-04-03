@@ -19,21 +19,21 @@ func main() {
 	creatorALpAmount := initialLPSupply
 	creatorBLpAmount := initialLPSupply
 
-	userALpAmount := types.NewInt((0))
-	userBLpAmount := types.NewInt((0))
+	userALpAmount := types.NewDec((0))
+	userBLpAmount := types.NewDec((0))
 
 	// make pool
 	pool := market.NewInterchainLiquidityPool(
 		"creator",
-		[]*types.Coin{
-			{Denom: denomA, Amount: types.NewInt(initialX)},
-			{Denom: denomB, Amount: types.NewInt(initialY)}},
+		[]*types.DecCoin{
+			{Denom: denomA, Amount: types.NewDec(initialX)},
+			{Denom: denomB, Amount: types.NewDec(initialY)}},
 		[]uint32{6, 6},
 		"20:80",
 		"test",
 		"test",
 	)
-	pool.AddPoolSupply(types.NewCoin(
+	pool.AddPoolSupply(types.NewDecCoin(
 		pool.PoolId,
 		initialLPSupply,
 	))
@@ -44,70 +44,90 @@ func main() {
 		fee,
 	)
 
+	tvl := amm.TVL()
+	lpPrice := tvl * 1e10 / pool.Supply.Amount.MustFloat64()
+	pool.PoolTokenPrice = lpPrice
+
 	// check current price.
 	amm.LogPrice("Create Pool", denomA, denomB, creatorALpAmount, creatorBLpAmount)
 
 	// going test process
 	// ================================
-	depositCoin := types.NewCoin(denomA, types.NewInt(initialX*0.1))
+	depositCoin := types.NewDecCoin(denomA, types.NewInt(initialX))
+	//depositCoin, _ := amm.CheckMaxDepositAmount(denomA, 0.1)
+	fmt.Println("DepositAmount:", depositCoin)
+	//fmt.Printf(err.Error())
+	//fmt.Print(coin)
 	outToken, err := amm.DepositSingleAsset(depositCoin)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	userALpAmount = userALpAmount.Add(outToken.Amount)
-	amm.LogPrice("Step0: deposit Asset A (initialX)", denomA, denomB, userALpAmount, userBLpAmount)
+	amm.LogPrice("Step0: deposit Asset A (initialX)", denomA, denomB, userALpAmount.RoundInt(), creatorBLpAmount)
 
 	//================================
-	depositCoin = types.NewCoin(
-		denomB,
-		types.NewInt(initialY),
-	)
+	depositCoin = types.NewDecCoin(denomB, types.NewInt(initialY))
+	//depositCoin, _ = amm.CheckMaxDepositAmount(denomB, 0.1)
 
+	fmt.Println("DepositAmount:", depositCoin)
 	outToken, err = amm.DepositSingleAsset(depositCoin)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	userBLpAmount = userBLpAmount.Add(outToken.Amount)
-	amm.LogPrice("Step2: deposit Asset B (initialY) By User B", denomA, denomB, userALpAmount, userBLpAmount)
+	amm.LogPrice("Step2: deposit Asset B (initialY) By User B", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
+
+	// ================================
+	tokenIn := types.NewDecCoin(denomB, types.NewInt(100))
+	tokenOut, _ := amm.LeftSwap(tokenIn, denomA)
+	pool.AddAsset(tokenIn)
+	pool.SubAsset(*tokenOut)
+	amm.LogPrice("step3: swap Asset A(10_0000) to Asset B", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
 
 	// // ================================
-	// tokenIn := types.NewCoin(denomA, types.NewInt(10_0000))
-	// tokenOut, _ := amm.LeftSwap(tokenIn, denomB)
+	// depositCoin, _ = amm.CheckMaxDepositAmount(denomB, 0.1)
+	// fmt.Println("Current Allow Single Deposit Amount:", depositCoin)
 
-	// pool.AddAsset(tokenIn)
-	// pool.SubAsset(*tokenOut)
-	// amm.LogPrice("step3: swap Asset A(10_0000) to Asset B", denomA, denomB, userALpAmount, userBLpAmount)
+	// outToken, _ = amm.DepositSingleAsset(*depositCoin)
+	// userBLpAmount = userBLpAmount.Add(outToken.Amount)
+	// amm.LogPrice("step4: make pool as a balance", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
 
 	// // ================================
-	// tokenIn = types.NewCoin(denomA, types.NewInt(100_0000))
+	// tokenIn = types.NewDecCoin(denomA, types.NewInt(100_0000))
 	// tokenOut, _ = amm.LeftSwap(tokenIn, denomB)
-
 	// pool.AddAsset(tokenIn)
 	// pool.SubAsset(*tokenOut)
-	// amm.LogPrice("step4: swap Asset A(100_0000) to Asset B", denomA, denomB, userALpAmount, userBLpAmount)
+	// amm.LogPrice("step4: swap Asset A(100_0000) to Asset B", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
+
+	// ================================
+	tokenIn = types.NewDecCoin(denomB, types.NewInt(100_0000))
+	tokenOut, _ = amm.LeftSwap(tokenIn, denomB)
+	pool.AddAsset(tokenIn)
+	pool.SubAsset(*tokenOut)
+	amm.LogPrice("step4: swap Asset B(100_0000) to Asset B", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
+
+	// ================================
+	depositCoin = types.NewDecCoin(denomA, types.NewInt(100_000))
+	outToken, _ = amm.DepositSingleAsset(depositCoin)
+	userALpAmount = userALpAmount.Add(outToken.Amount)
+	amm.LogPrice("step5: deposit Asset A (100_000)", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
+
+	// ================================
+	depositCoin = types.NewDecCoin(denomA, types.NewInt(100_000))
+	outToken, _ = amm.DepositSingleAsset(depositCoin)
+	userALpAmount = userALpAmount.Add(outToken.Amount)
+	amm.LogPrice("step6: deposit Asset A (100_000)", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
 
 	// // ================================
-	// depositCoin = types.NewCoin(denomA, types.NewInt(100_000))
 	// outToken, _ = amm.DepositSingleAsset(depositCoin)
 	// userALpAmount = userALpAmount.Add(outToken.Amount)
-	// amm.LogPrice("step5: deposit Asset A (100_000)", denomA, denomB, userALpAmount, userBLpAmount)
+	// amm.LogPrice("step7: withdraw Asset", denomA, denomB, userALpAmount.RoundInt(), userBLpAmount.RoundInt())
 
-	// // ================================
-	// depositCoin = types.NewCoin(denomA, types.NewInt(100_000))
-	// outToken, _ = amm.DepositSingleAsset(depositCoin)
-	// userALpAmount = userALpAmount.Add(outToken.Amount)
-	// amm.LogPrice("step6: deposit Asset A (100_000)", denomA, denomB, userALpAmount, userBLpAmount)
-
-	// // ================================
-	// outToken, _ = amm.DepositSingleAsset(depositCoin)
-	// userALpAmount = userALpAmount.Add(outToken.Amount)
-	// amm.LogPrice("step7: withdraw Asset", denomA, denomB, userALpAmount, userBLpAmount)
-
-	// userAPoolCoin := types.NewCoin(
+	// userAPoolCoin := types.NewDecCoin(
 	// 	pool.PoolId,
-	// 	userALpAmount,
+	// 	userALpAmount.RoundInt(),
 	// )
 
 	// userBPoolCoin := types.NewCoin(
