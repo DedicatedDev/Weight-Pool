@@ -20,7 +20,7 @@ func GetPoolId(denoms []string) string {
 	return poolId
 }
 
-func GetPoolIdWithTokens(tokens []*sdk.DecCoin) string {
+func GetPoolIdWithTokens(tokens []*sdk.Coin) string {
 
 	denoms := []string{}
 	for _, token := range tokens {
